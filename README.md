@@ -1,6 +1,7 @@
 # carbon.sql
 SQL for carbon emission calculation
 
+## Scope GHG emission
 ```sql
 WITH
 a AS (
@@ -64,4 +65,106 @@ JOIN f
 WHERE a.Scope = 'Scope 2'
   AND REPLACE(LOWER(a.emission_source_key),' ','_') LIKE '%electric%'
 GROUP BY a.Scope;
+```
+
+## Gas
+```sql
+WITH detail AS (
+  -- 把上面 A 的 SELECT 改成只輸出 facility, gas, tCO2e 也行
+  SELECT
+    f.facility AS facility,
+    f.gas AS gas,
+    (a.amount_for_calc * f.factor_value * g.gwp)/1000.0 AS tCO2e
+  FROM (
+    SELECT
+      REPLACE(LOWER(TRIM("emission_source")),' ','_') AS es_key,
+      CASE
+        WHEN (TRIM("unit") IN ('L','l','公升','liter','litre','Liter','Litre'))
+         AND ("activity" LIKE '%酒精%')
+        THEN CAST("amount" AS REAL) * 0.804
+        ELSE CAST("amount" AS REAL)
+      END AS amount_for_calc,
+      UPPER(TRIM(gas)) AS gas_lock
+    FROM "2603activity data"
+  ) a
+  JOIN (
+    SELECT
+      REPLACE(LOWER(TRIM("emission source")),' ','_') AS es_key,
+      TRIM("活動/設施") AS facility,
+      UPPER(TRIM("Gas")) AS gas,
+      CAST("Factor" AS REAL) AS factor_value
+    FROM "2603Factors"
+  ) f
+    ON a.es_key = f.es_key
+   AND (
+        (a.gas_lock IS NOT NULL AND a.gas_lock = f.gas)
+        OR (a.gas_lock IS NULL AND f.gas IN ('CO2','CH4','N2O'))
+      )
+  JOIN (
+    SELECT UPPER(TRIM("GAS")) AS gas, CAST("GWP" AS REAL) AS gwp
+    FROM "2603GWP"
+  ) g
+    ON f.gas = g.gas
+  WHERE f.gas IN ('CO2','CH4','N2O')
+)
+SELECT
+  facility AS "活動/設施",
+  ROUND(SUM(CASE WHEN gas='CO2' THEN tCO2e ELSE 0 END), 6) AS CO2_tCO2e,
+  ROUND(SUM(CASE WHEN gas='CH4' THEN tCO2e ELSE 0 END), 6) AS CH4_tCO2e,
+  ROUND(SUM(CASE WHEN gas='N2O' THEN tCO2e ELSE 0 END), 6) AS N2O_tCO2e,
+  ROUND(SUM(tCO2e), 6) AS total_tCO2e
+FROM detail
+GROUP BY facility
+ORDER BY total_tCO2e DESC;
+```
+
+##percentage
+```sql
+WITH calc AS (
+  SELECT
+    f."活動/設施" AS facility,
+    (a.amount_for_calc * f.factor_value * g.gwp)/1000.0 AS tCO2e
+  FROM (
+    SELECT
+      REPLACE(LOWER(TRIM("emission_source")),' ','_') AS es_key,
+      UPPER(TRIM(gas)) AS gas_lock,
+      CASE
+        WHEN (TRIM("unit") IN ('L','l','公升','liter','litre','Liter','Litre'))
+         AND ("activity" LIKE '%酒精%')
+        THEN CAST("amount" AS REAL) * 0.804
+        ELSE CAST("amount" AS REAL)
+      END AS amount_for_calc
+    FROM "2603activity data"
+  ) a
+  JOIN (
+    SELECT
+      REPLACE(LOWER(TRIM("emission source")),' ','_') AS es_key,
+      TRIM("活動/設施") AS "活動/設施",
+      UPPER(TRIM("Gas")) AS gas,
+      CAST("Factor" AS REAL) AS factor_value
+    FROM "2603Factors"
+  ) f
+    ON a.es_key = f.es_key
+   AND (
+        (a.gas_lock IS NOT NULL AND a.gas_lock = f.gas)
+        OR
+        (a.gas_lock IS NULL AND f.gas IN ('CO2','CH4','N2O'))
+       )
+  JOIN (
+    SELECT
+      UPPER(TRIM("GAS")) AS gas,
+      CAST("GWP" AS REAL) AS gwp
+    FROM "2603GWP"
+  ) g
+    ON f.gas = g.gas
+  WHERE f.gas IN ('CO2','CH4','N2O')
+)
+
+SELECT
+  facility AS "活動/設施",
+  ROUND(SUM(tCO2e), 2) AS total_tCO2e,
+  ROUND(SUM(tCO2e) * 100.0 / (SELECT SUM(tCO2e) FROM calc), 2) AS percentage
+FROM calc
+GROUP BY facility
+ORDER BY total_tCO2e DESC;
 ```
